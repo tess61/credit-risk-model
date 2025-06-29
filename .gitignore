@@ -1,0 +1,32 @@
+# Data directories
+   data/
+   data/raw/
+   data/processed/
+
+   # Python
+   __pycache__/
+   *.pyc
+   *.pyo
+   *.pyd
+   .Python
+   env/
+   venv/
+   *.egg-info/
+   .pytest_cache/
+
+   # Jupyter Notebook
+   .ipynb_checkpoints/
+
+   # Environment
+   .env
+
+   # IDE files
+   .vscode/
+   .idea/
+
+   # MLflow
+   mlruns/
+   *.db
+
+   # Docker
+   *.log
