@@ -1,32 +1,33 @@
 # Data directories
-   data/
-   data/raw/
-   data/processed/
+data/
+data/raw/
+data/processed/
+*.csv
 
-   # Python
-   __pycache__/
-   *.pyc
-   *.pyo
-   *.pyd
-   .Python
-   env/
-   venv/
-   *.egg-info/
-   .pytest_cache/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
 
-   # Jupyter Notebook
-   .ipynb_checkpoints/
+# Jupyter Notebook
+.ipynb_checkpoints/
 
-   # Environment
-   .env
+# Environment
+.env
 
-   # IDE files
-   .vscode/
-   .idea/
+# IDE files
+.vscode/
+.idea/
 
-   # MLflow
-   mlruns/
-   *.db
+# MLflow
+mlruns/
+*.db
 
-   # Docker
-   *.log
+# Docker
+*.log
