@@ -6,3 +6,5 @@ jupyter
 scikit-learn
 xverse
 woe
+mlflow
+pytest
