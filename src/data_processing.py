@@ -1,12 +1,13 @@
 # src/data_processing.py
-"""Feature engineering script for credit risk model."""
+"""Feature engineering and proxy target variable creation for credit risk model."""
 
 import pandas as pd
 import numpy as np
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
+from sklearn.cluster import KMeans
 from xverse.transformer import WOE
 import woe.feature_process as woe
 import logging
@@ -18,15 +19,12 @@ logger = logging.getLogger(__name__)
 
 def load_data(file_path):
     """Load dataset from CSV file."""
-    # Log current working directory for debugging
     logger.info(f"Current working directory: {os.getcwd()}")
-    # Convert to absolute path for robustness
     abs_path = os.path.abspath(file_path)
     logger.info(f"Attempting to load file: {abs_path}")
     try:
         df = pd.read_csv(abs_path)
         logger.info(f"Loaded dataset from {abs_path} with shape {df.shape}")
-        # Log column names for verification
         logger.info(f"Columns in dataset: {list(df.columns)}")
         return df
     except FileNotFoundError:
@@ -44,22 +42,67 @@ def create_aggregate_features(df):
             'TransactionId': 'nunique'  # Unique transactions
         }).reset_index()
         
-        # Log aggregated columns for debugging
         logger.info(f"Aggregated columns: {list(agg_features.columns)}")
         
-        # Flatten column names
         agg_features.columns = [
             'CustomerId', 'total_amount', 'avg_amount', 'transaction_count', 
             'std_amount', 'unique_transactions'
         ]
         
-        # Fill NaN in std_amount (for customers with single transaction)
         agg_features['std_amount'] = agg_features['std_amount'].fillna(0)
         
         logger.info("Created aggregate features")
         return agg_features
     except KeyError as e:
         logger.error(f"KeyError in create_aggregate_features: {e}")
+        raise
+
+def create_rfm_features(df):
+    """Calculate RFM metrics and create is_high_risk label using K-Means clustering."""
+    try:
+        # Convert TransactionStartTime to datetime
+        df['TransactionStartTime'] = pd.to_datetime(df['TransactionStartTime'])
+        
+        # Calculate RFM metrics per CustomerId
+        current_date = df['TransactionStartTime'].max() + pd.Timedelta(days=1)
+        rfm_df = df.groupby('CustomerId').agg({
+            'TransactionStartTime': lambda x: (current_date - x.max()).days,  # Recency
+            'TransactionId': 'count',  # Frequency
+            'Amount': 'sum'  # Monetary
+        }).reset_index()
+        
+        rfm_df.columns = ['CustomerId', 'recency', 'frequency', 'monetary']
+        
+        # Normalize RFM features for clustering
+        rfm_features = ['recency', 'frequency', 'monetary']
+        scaler = MinMaxScaler()
+        rfm_scaled = scaler.fit_transform(rfm_df[rfm_features])
+        
+        # Apply K-Means clustering (3 clusters: low, medium, high risk)
+        kmeans = KMeans(n_clusters=3, random_state=42)
+        rfm_df['cluster'] = kmeans.fit_predict(rfm_scaled)
+        
+        # Define high-risk cluster (high recency, low frequency, low monetary)
+        # Assume cluster with highest mean recency and lowest mean frequency/monetary is high-risk
+        cluster_summary = rfm_df.groupby('cluster')[rfm_features].mean().reset_index()
+        cluster_summary['risk_score'] = (
+            cluster_summary['recency'] - 
+            (cluster_summary['frequency'] + cluster_summary['monetary']) / 2
+        )
+        high_risk_cluster = cluster_summary['cluster'][cluster_summary['risk_score'].idxmax()]
+        
+        # Assign is_high_risk label (1 for high-risk cluster, 0 otherwise)
+        rfm_df['is_high_risk'] = (rfm_df['cluster'] == high_risk_cluster).astype(int)
+        
+        logger.info(f"RFM features created. High-risk cluster: {high_risk_cluster}")
+        logger.info(f"Cluster summary:\n{cluster_summary}")
+        
+        return rfm_df[['CustomerId', 'recency', 'frequency', 'monetary', 'is_high_risk']]
+    except KeyError as e:
+        logger.error(f"KeyError in create_rfm_features: {e}")
+        raise
+    except ValueError as e:
+        logger.error(f"ValueError in create_rfm_features: {e}")
         raise
 
 def extract_temporal_features(df):
@@ -81,19 +124,16 @@ def extract_temporal_features(df):
 
 def build_preprocessing_pipeline(numerical_cols, categorical_cols):
     """Build sklearn pipeline for preprocessing."""
-    # Numerical pipeline: Impute missing values with median, then standardize
     numerical_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='median')),
         ('scaler', StandardScaler())
     ])
     
-    # Categorical pipeline: Impute missing values with mode, then one-hot encode
     categorical_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='most_frequent')),
         ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
     ])
     
-    # Combine pipelines
     preprocessor = ColumnTransformer([
         ('num', numerical_pipeline, numerical_cols),
         ('cat', categorical_pipeline, categorical_cols)
@@ -107,13 +147,12 @@ def apply_woe_iv(df, features, target):
     woe_transformer = WOE()
     df_woe = woe_transformer.fit_transform(df[features + [target]], df[target])
     
-    # Get IV values
     iv_values = woe_transformer.iv_df
     logger.info(f"Information Values:\n{iv_values}")
     
     return df_woe, iv_values
 
-def process_data(input_path, output_path, target_col=None):
+def process_data(input_path, output_path, target_col='is_high_risk'):
     """Main function to process data and save output."""
     # Load data
     df = load_data(input_path)
@@ -121,8 +160,12 @@ def process_data(input_path, output_path, target_col=None):
     # Create aggregate features
     agg_df = create_aggregate_features(df)
     
-    # Merge aggregates back to original data
+    # Create RFM features and is_high_risk label
+    rfm_df = create_rfm_features(df)
+    
+    # Merge aggregates and RFM features
     df = df.merge(agg_df, on='CustomerId', how='left')
+    df = df.merge(rfm_df, on='CustomerId', how='left')
     
     # Extract temporal features
     df = extract_temporal_features(df)
@@ -130,7 +173,8 @@ def process_data(input_path, output_path, target_col=None):
     # Define feature columns
     numerical_cols = [
         'Amount', 'Value', 'total_amount', 'avg_amount', 'transaction_count', 
-        'std_amount', 'transaction_hour', 'transaction_day', 'transaction_month'
+        'std_amount', 'transaction_hour', 'transaction_day', 'transaction_month',
+        'recency', 'frequency', 'monetary'
     ]
     categorical_cols = [
         'CurrencyCode', 'CountryCode', 'ProviderId', 'ProductId', 'ProductCategory',
@@ -143,8 +187,8 @@ def process_data(input_path, output_path, target_col=None):
         ('preprocessor', preprocessor)
     ])
     
-    # Fit and transform data
-    transformed_data = pipeline.fit_transform(df)
+    # Fit and transform data (exclude is_high_risk for transformation)
+    transformed_data = pipeline.fit_transform(df.drop(columns=[target_col], errors='ignore'))
     
     # Convert back to DataFrame
     cat_feature_names = pipeline.named_steps['preprocessor']\
@@ -152,18 +196,16 @@ def process_data(input_path, output_path, target_col=None):
     feature_names = numerical_cols + list(cat_feature_names)
     transformed_df = pd.DataFrame(transformed_data, columns=feature_names)
     
-    # Add CustomerId and target (if provided)
+    # Add CustomerId and is_high_risk
     transformed_df['CustomerId'] = df['CustomerId'].reset_index(drop=True)
-    if target_col:
-        transformed_df[target_col] = df[target_col].reset_index(drop=True)
+    transformed_df[target_col] = df[target_col].reset_index(drop=True)
     
-    # Apply WoE/IV if target is provided (for feature selection)
-    if target_col:
-        woe_features = numerical_cols + categorical_cols
-        transformed_df, iv_values = apply_woe_iv(df, woe_features, target_col)
-        transformed_df = transformed_df.merge(
-            df[['CustomerId', target_col]], on='CustomerId', how='left'
-        )
+    # Apply WoE/IV if target is provided
+    woe_features = numerical_cols + categorical_cols
+    transformed_df, iv_values = apply_woe_iv(df, woe_features, target_col)
+    transformed_df = transformed_df.merge(
+        df[['CustomerId', target_col]], on='CustomerId', how='left'
+    )
     
     # Save processed data
     transformed_df.to_csv(output_path, index=False)
@@ -175,5 +217,5 @@ if __name__ == "__main__":
     # Use absolute path for Windows
     input_path = r"C:\Users\tes's\Desktop\K_AIM\Week 5\credit-risk-model\data\raw\data.csv"
     output_path = r"C:\Users\tes's\Desktop\K_AIM\Week 5\credit-risk-model\data\processed\processed_data.csv"
-    target_col = None  # Will be 'is_high_risk' after Task 4
+    target_col = 'is_high_risk'
     processed_df, pipeline = process_data(input_path, output_path, target_col)
