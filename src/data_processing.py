@@ -8,8 +8,6 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.cluster import KMeans
-from xverse.transformer import WOE
-import woe.feature_process as woe
 import logging
 import os
 
@@ -83,7 +81,6 @@ def create_rfm_features(df):
         rfm_df['cluster'] = kmeans.fit_predict(rfm_scaled)
         
         # Define high-risk cluster (high recency, low frequency, low monetary)
-        # Assume cluster with highest mean recency and lowest mean frequency/monetary is high-risk
         cluster_summary = rfm_df.groupby('cluster')[rfm_features].mean().reset_index()
         cluster_summary['risk_score'] = (
             cluster_summary['recency'] - 
@@ -142,16 +139,6 @@ def build_preprocessing_pipeline(numerical_cols, categorical_cols):
     logger.info("Built preprocessing pipeline")
     return preprocessor
 
-def apply_woe_iv(df, features, target):
-    """Apply Weight of Evidence (WoE) and Information Value (IV) transformation."""
-    woe_transformer = WOE()
-    df_woe = woe_transformer.fit_transform(df[features + [target]], df[target])
-    
-    iv_values = woe_transformer.iv_df
-    logger.info(f"Information Values:\n{iv_values}")
-    
-    return df_woe, iv_values
-
 def process_data(input_path, output_path, target_col='is_high_risk'):
     """Main function to process data and save output."""
     # Load data
@@ -200,12 +187,12 @@ def process_data(input_path, output_path, target_col='is_high_risk'):
     transformed_df['CustomerId'] = df['CustomerId'].reset_index(drop=True)
     transformed_df[target_col] = df[target_col].reset_index(drop=True)
     
-    # Apply WoE/IV if target is provided
-    woe_features = numerical_cols + categorical_cols
-    transformed_df, iv_values = apply_woe_iv(df, woe_features, target_col)
-    transformed_df = transformed_df.merge(
-        df[['CustomerId', target_col]], on='CustomerId', how='left'
-    )
+    # Skip WoE/IV transformation due to compatibility issues
+    # woe_features = numerical_cols + categorical_cols
+    # transformed_df, iv_values = apply_woe_iv(df, woe_features, target_col)
+    # transformed_df = transformed_df.merge(
+    #     df[['CustomerId', target_col]], on='CustomerId', how='left'
+    # )
     
     # Save processed data
     transformed_df.to_csv(output_path, index=False)
